@@ -122,6 +122,10 @@ public final class CoordUtils {
         return Direction.values()[2 + rand.nextInt(4)];//Return NSWE
     }
 
+    public static BlockPos getRayTraceFruitPos(LevelAccessor level, Species species, BlockPos treePos, BlockPos branchPos, SafeChunkBounds safeBounds) {
+        return getRayTraceFruitPos(level, species, treePos, branchPos, safeBounds, 4);
+    }
+
     /**
      * Find a suitable position for seed drops or fruit placement using ray tracing.
      *
@@ -131,18 +135,24 @@ public final class CoordUtils {
      * @return The {@link BlockPos} of a suitable location.  The block is always air if successful otherwise it is
      * BlockPos.ZERO
      */
-    public static BlockPos getRayTraceFruitPos(LevelAccessor level, Species species, BlockPos treePos, BlockPos branchPos, SafeChunkBounds safeBounds) {
-        final HitResult result = branchRayTrace(level, species, treePos, branchPos, 45, 60, 4 + level.getRandom().nextInt(3), safeBounds);
+    public static BlockPos getRayTraceFruitPos(LevelAccessor level, Species species, BlockPos treePos, BlockPos branchPos, SafeChunkBounds safeBounds, int attempts) {
+        for (int i = 0; i < attempts; i++) {
+            float spreadHor = 45 + level.getRandom().nextFloat() * 30; // Random horizontal spread
+            float spreadVer = 60 + level.getRandom().nextFloat() * 20; // Random vertical spread
+            float distance = 4 + level.getRandom().nextInt(5); // Random distance
 
-        if (result != null) {
-            BlockPos hitPos = BlockPos.containing(result.getLocation());
-            if (hitPos != BlockPos.ZERO) {
-                do { // Run straight down until we hit a block that's non compatible leaves.
-                    hitPos = hitPos.below();
-                } while (species.getFamily().isCompatibleGenericLeaves(species, level.getBlockState(hitPos), level, hitPos));
+            final HitResult result = branchRayTrace(level, species, treePos, branchPos, spreadHor, spreadVer, distance, safeBounds);
 
-                if (level.isEmptyBlock(hitPos)) { // If that block is air then we have a winner.
-                    return hitPos;
+            if (result != null) {
+                BlockPos hitPos = BlockPos.containing(result.getLocation());
+                if (hitPos != BlockPos.ZERO) {
+                    do { // Run straight down until we hit a block that's non compatible leaves.
+                        hitPos = hitPos.below();
+                    } while (species.getFamily().isCompatibleGenericLeaves(species, level.getBlockState(hitPos), level, hitPos));
+
+                    if (level.isEmptyBlock(hitPos)) { // If that block is air then we have a winner.
+                        return hitPos;
+                    }
                 }
             }
         }

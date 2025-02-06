@@ -12,12 +12,14 @@ import com.ferreusveritas.dynamictrees.systems.nodemapper.FindEndsNode;
 import com.ferreusveritas.dynamictrees.tree.species.Species;
 import com.ferreusveritas.dynamictrees.util.CoordUtils;
 import com.ferreusveritas.dynamictrees.util.SafeChunkBounds;
+
 import net.minecraft.core.BlockPos;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.level.LevelAccessor;
 import net.minecraft.world.level.block.state.BlockState;
 
 import java.util.List;
+import net.minecraft.server.level.ServerLevel;
 
 public class FruitGenFeature extends GenFeature {
 
@@ -29,7 +31,7 @@ public class FruitGenFeature extends GenFeature {
 
     @Override
     protected void registerProperties() {
-        this.register(FRUIT, VERTICAL_SPREAD, QUANTITY, RAY_DISTANCE, FRUITING_RADIUS, PLACE_CHANCE);
+        this.register(FRUIT, VERTICAL_SPREAD, QUANTITY, RAY_DISTANCE, FRUITING_RADIUS, PLACE_CHANCE, CLEAR_WEATHER_MODIFIER, RAIN_MODIFIER, STORM_MODIFIER);
     }
 
     @Override
@@ -39,7 +41,10 @@ public class FruitGenFeature extends GenFeature {
                 .with(VERTICAL_SPREAD, 30f)
                 .with(QUANTITY, 4)
                 .with(FRUITING_RADIUS, 8)
-                .with(PLACE_CHANCE, 1f);
+                .with(PLACE_CHANCE, 1f)
+                .with(CLEAR_WEATHER_MODIFIER, 1.0f)
+                .with(RAIN_MODIFIER, 1.2f)
+                .with(STORM_MODIFIER, 0.8f);
     }
 
     @Override
@@ -49,16 +54,21 @@ public class FruitGenFeature extends GenFeature {
 
     @Override
     protected boolean postGenerate(GenFeatureConfiguration configuration, PostGenerationContext context) {
-        if (!context.endPoints().isEmpty()) {
-            int qty = configuration.get(QUANTITY);
-            qty *= context.fruitProductionFactor();
-            for (int i = 0; i < qty; i++) {
-                final BlockPos endPoint = context.endPoints().get(context.random().nextInt(context.endPoints().size()));
-                this.placeDuringWorldGen(configuration, context.species(), context.level(), context.pos().above(),
-                        endPoint, context.bounds(), context.seasonValue());
-            }
-            return true;
+        final var branchPosList = context.endPoints();
+
+        if (branchPosList.isEmpty()) {
+            return false;
         }
+
+        final var treePos = context.pos().above();
+
+        int attempts = configuration.get(QUANTITY);
+        attempts *= context.fruitProductionFactor() * 6;
+
+        for (final var branchPos : branchPosList) {
+            this.placeDuringWorldGen(configuration, context.species(), context.level(), treePos, branchPos, context.bounds(), context.seasonValue(), attempts);
+        }
+
         return false;
     }
 
@@ -71,19 +81,33 @@ public class FruitGenFeature extends GenFeature {
 
         if (branch != null && branch.getRadius(blockState) >= configuration.get(FRUITING_RADIUS) && context.natural()) {
             final BlockPos rootPos = context.pos();
-            final float fruitingFactor = fruit.seasonalFruitProductionFactor(context.levelContext(), rootPos);
+            float fruitingFactor = fruit.seasonalFruitProductionFactor(context.levelContext(), rootPos);
+
+            // Apply weather modifiers
+            float weatherModifier = configuration.get(CLEAR_WEATHER_MODIFIER);
+            if (level instanceof ServerLevel serverLevel) {
+                if (serverLevel.isRaining()) {
+                    weatherModifier *= configuration.get(RAIN_MODIFIER);
+                }
+                if (serverLevel.isThundering()) {
+                    weatherModifier *= configuration.get(STORM_MODIFIER);
+                }
+            }
+            fruitingFactor *= weatherModifier;
 
             if (fruitingFactor > fruit.getMinProductionFactor() && fruitingFactor > level.getRandom().nextFloat()) {
                 final FindEndsNode endFinder = new FindEndsNode();
                 TreeHelper.startAnalysisFromRoot(level, rootPos, new MapSignal(endFinder));
-                final List<BlockPos> endPoints = endFinder.getEnds();
-                int qty = configuration.get(QUANTITY);
-                if (!endPoints.isEmpty()) {
-                    for (int i = 0; i < qty; i++) {
-                        final BlockPos endPoint = endPoints.get(level.getRandom().nextInt(endPoints.size()));
-                        this.place(configuration, context.species(), level, rootPos.above(), endPoint,
-                                SeasonHelper.getSeasonValue(context.levelContext(), rootPos));
-                    }
+                final List<BlockPos> branchPosList = endFinder.getEnds();
+
+                if (branchPosList.isEmpty()) {
+                    return false;
+                }
+
+                int attempts = configuration.get(QUANTITY);
+
+                for (var branchPos : branchPosList) {
+                    this.place(configuration, context.species(), level, rootPos.above(), branchPos, SeasonHelper.getSeasonValue(context.levelContext(), rootPos), attempts);
                 }
             }
         }
@@ -91,25 +115,44 @@ public class FruitGenFeature extends GenFeature {
         return true;
     }
 
-    protected void place(GenFeatureConfiguration configuration, Species species, LevelAccessor level, BlockPos treePos,
-                         BlockPos branchPos, Float seasonValue) {
-        final BlockPos fruitPos =
-                CoordUtils.getRayTraceFruitPos(level, species, treePos, branchPos, SafeChunkBounds.ANY);
+    protected void place(GenFeatureConfiguration configuration, Species species, LevelAccessor level, BlockPos treePos, BlockPos branchPos, Float seasonValue, int attempts) {
+        final BlockPos fruitPos = CoordUtils.getRayTraceFruitPos(level, species, treePos, branchPos, SafeChunkBounds.ANY, attempts);
         if (shouldPlace(configuration, level, fruitPos)) {
             configuration.get(FRUIT).place(level, fruitPos, seasonValue);
         }
     }
 
     protected boolean shouldPlace(GenFeatureConfiguration configuration, LevelAccessor level, BlockPos pos) {
-        return pos != BlockPos.ZERO &&
-                (CoordUtils.coordHashCode(pos, 0) & 3) == 0 &&
-                level.getRandom().nextFloat() <= configuration.get(PLACE_CHANCE);
+        if (pos == BlockPos.ZERO) {
+            return false;
+        }
+
+        // Random chance based on PLACE_CHANCE
+        float chance = configuration.get(PLACE_CHANCE);
+
+        // Add randomness based on tree growth state
+        BlockState blockState = level.getBlockState(pos.below()); // Check the block below (branch)
+        if (TreeHelper.isBranch(blockState)) {
+            BranchBlock branch = (BranchBlock) blockState.getBlock();
+            int radius = branch.getRadius(blockState);
+            chance *= (radius * 0.75f); // Scale chance based on branch radius
+        }
+
+        // Add randomness based on environmental factors
+        if (level instanceof ServerLevel serverLevel) {
+            if (serverLevel.isRaining()) {
+                chance *= 1.2f; // Increase chance during rain
+            }
+            if (serverLevel.isThundering()) {
+                chance *= 0.8f; // Decrease chance during storms
+            }
+        }
+
+        return level.getRandom().nextFloat() <= chance;
     }
 
-    protected void placeDuringWorldGen(GenFeatureConfiguration configuration, Species species, LevelAccessor level,
-                                       BlockPos treePos, BlockPos branchPos, SafeChunkBounds bounds,
-                                       Float seasonValue) {
-        final BlockPos fruitPos = CoordUtils.getRayTraceFruitPos(level, species, treePos, branchPos, bounds);
+    protected void placeDuringWorldGen(GenFeatureConfiguration configuration, Species species, LevelAccessor level, BlockPos treePos, BlockPos branchPos, SafeChunkBounds bounds, Float seasonValue, int attempts) {
+        final BlockPos fruitPos = CoordUtils.getRayTraceFruitPos(level, species, treePos, branchPos, bounds, attempts);
         if (shouldPlaceDuringWorldGen(configuration, level, fruitPos)) {
             configuration.get(FRUIT).placeDuringWorldGen(level, fruitPos, seasonValue);
         }
@@ -118,5 +161,4 @@ public class FruitGenFeature extends GenFeature {
     protected boolean shouldPlaceDuringWorldGen(GenFeatureConfiguration configuration, LevelAccessor level, BlockPos pos) {
         return pos != BlockPos.ZERO && level.getRandom().nextFloat() <= configuration.get(PLACE_CHANCE);
     }
-
 }
