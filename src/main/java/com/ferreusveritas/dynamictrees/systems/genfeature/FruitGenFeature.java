@@ -19,7 +19,6 @@ import net.minecraft.world.level.LevelAccessor;
 import net.minecraft.world.level.block.state.BlockState;
 
 import java.util.List;
-import net.minecraft.server.level.ServerLevel;
 
 public class FruitGenFeature extends GenFeature {
 
@@ -31,7 +30,7 @@ public class FruitGenFeature extends GenFeature {
 
     @Override
     protected void registerProperties() {
-        this.register(FRUIT, VERTICAL_SPREAD, QUANTITY, RAY_DISTANCE, FRUITING_RADIUS, PLACE_CHANCE, CLEAR_WEATHER_MODIFIER, RAIN_MODIFIER, STORM_MODIFIER);
+        this.register(FRUIT, VERTICAL_SPREAD, QUANTITY, RAY_DISTANCE, FRUITING_RADIUS, PLACE_CHANCE);
     }
 
     @Override
@@ -41,10 +40,7 @@ public class FruitGenFeature extends GenFeature {
                 .with(VERTICAL_SPREAD, 30f)
                 .with(QUANTITY, 4)
                 .with(FRUITING_RADIUS, 8)
-                .with(PLACE_CHANCE, 1f)
-                .with(CLEAR_WEATHER_MODIFIER, 1.0f)
-                .with(RAIN_MODIFIER, 1.2f)
-                .with(STORM_MODIFIER, 0.8f);
+                .with(PLACE_CHANCE, 1f);
     }
 
     @Override
@@ -77,23 +73,19 @@ public class FruitGenFeature extends GenFeature {
         final LevelAccessor level = context.level();
         final BlockState blockState = level.getBlockState(context.treePos());
         final BranchBlock branch = TreeHelper.getBranch(blockState);
-        final Fruit fruit = configuration.get(FRUIT);
 
         if (branch != null && branch.getRadius(blockState) >= configuration.get(FRUITING_RADIUS) && context.natural()) {
             final BlockPos rootPos = context.pos();
-            float fruitingFactor = fruit.seasonalFruitProductionFactor(context.levelContext(), rootPos);
 
-            // Apply weather modifiers
-            float weatherModifier = configuration.get(CLEAR_WEATHER_MODIFIER);
-            if (level instanceof ServerLevel serverLevel) {
-                if (serverLevel.isRaining()) {
-                    weatherModifier *= configuration.get(RAIN_MODIFIER);
-                }
-                if (serverLevel.isThundering()) {
-                    weatherModifier *= configuration.get(STORM_MODIFIER);
-                }
+            var currentSeason = SeasonHelper.getSeasonValue(context.levelContext(), BlockPos.ZERO);
+
+            final Fruit fruit = configuration.get(FRUIT);
+
+            if (!isFruitInSeason(fruit, currentSeason)) {
+                return false;
             }
-            fruitingFactor *= weatherModifier;
+
+            float fruitingFactor = fruit.seasonalFruitProductionFactor(context.levelContext(), rootPos);
 
             if (fruitingFactor > fruit.getMinProductionFactor() && fruitingFactor > level.getRandom().nextFloat()) {
                 final FindEndsNode endFinder = new FindEndsNode();
@@ -107,7 +99,7 @@ public class FruitGenFeature extends GenFeature {
                 int attempts = configuration.get(QUANTITY);
 
                 for (var branchPos : branchPosList) {
-                    this.place(configuration, context.species(), level, rootPos.above(), branchPos, SeasonHelper.getSeasonValue(context.levelContext(), rootPos), attempts);
+                    this.place(configuration, context.species(), level, rootPos.above(), branchPos, currentSeason, attempts);
                 }
             }
         }
@@ -115,15 +107,21 @@ public class FruitGenFeature extends GenFeature {
         return true;
     }
 
-    protected void place(GenFeatureConfiguration configuration, Species species, LevelAccessor level, BlockPos treePos, BlockPos branchPos, Float seasonValue, int attempts) {
+    protected void place(GenFeatureConfiguration configuration, Species species, LevelAccessor level, BlockPos treePos, BlockPos branchPos, Float currentSeason, int attempts) {
         final BlockPos fruitPos = CoordUtils.getRayTraceFruitPos(level, species, treePos, branchPos, SafeChunkBounds.ANY, attempts);
-        if (shouldPlace(configuration, level, fruitPos)) {
-            configuration.get(FRUIT).place(level, fruitPos, seasonValue);
+        if (shouldPlace(configuration, level, fruitPos, currentSeason)) {
+            configuration.get(FRUIT).place(level, fruitPos, currentSeason);
         }
     }
 
-    protected boolean shouldPlace(GenFeatureConfiguration configuration, LevelAccessor level, BlockPos pos) {
+    protected boolean shouldPlace(GenFeatureConfiguration configuration, LevelAccessor level, BlockPos pos, Float currentSeason) {
         if (pos == BlockPos.ZERO) {
+            return false;
+        }
+
+        final Fruit fruit = configuration.get(FRUIT);
+
+        if (!isFruitInSeason(fruit, currentSeason)) {
             return false;
         }
 
@@ -131,34 +129,44 @@ public class FruitGenFeature extends GenFeature {
         float chance = configuration.get(PLACE_CHANCE);
 
         // Add randomness based on tree growth state
-        BlockState blockState = level.getBlockState(pos.below()); // Check the block below (branch)
+        final BlockState blockState = level.getBlockState(pos.below()); // Check the block below (branch)
         if (TreeHelper.isBranch(blockState)) {
-            BranchBlock branch = (BranchBlock) blockState.getBlock();
+            final BranchBlock branch = (BranchBlock) blockState.getBlock();
             int radius = branch.getRadius(blockState);
             chance *= (radius * 0.75f); // Scale chance based on branch radius
-        }
-
-        // Add randomness based on environmental factors
-        if (level instanceof ServerLevel serverLevel) {
-            if (serverLevel.isRaining()) {
-                chance *= 1.2f; // Increase chance during rain
-            }
-            if (serverLevel.isThundering()) {
-                chance *= 0.8f; // Decrease chance during storms
-            }
         }
 
         return level.getRandom().nextFloat() <= chance;
     }
 
-    protected void placeDuringWorldGen(GenFeatureConfiguration configuration, Species species, LevelAccessor level, BlockPos treePos, BlockPos branchPos, SafeChunkBounds bounds, Float seasonValue, int attempts) {
+    protected void placeDuringWorldGen(GenFeatureConfiguration configuration, Species species, LevelAccessor level, BlockPos treePos, BlockPos branchPos, SafeChunkBounds bounds, Float currentSeason, int attempts) {
         final BlockPos fruitPos = CoordUtils.getRayTraceFruitPos(level, species, treePos, branchPos, bounds, attempts);
         if (shouldPlaceDuringWorldGen(configuration, level, fruitPos)) {
-            configuration.get(FRUIT).placeDuringWorldGen(level, fruitPos, seasonValue);
+            species.getGenFeatures();
+            configuration.get(FRUIT).placeDuringWorldGen(level, fruitPos, currentSeason);
         }
     }
 
     protected boolean shouldPlaceDuringWorldGen(GenFeatureConfiguration configuration, LevelAccessor level, BlockPos pos) {
         return pos != BlockPos.ZERO && level.getRandom().nextFloat() <= configuration.get(PLACE_CHANCE);
+    }
+
+    private boolean isFruitInSeason(Fruit fruit, Float currentSeason) {
+        var fruitStart = fruit.getSeasonOffset();
+
+        if (fruitStart == null) {
+            return true;
+        }
+
+        currentSeason = currentSeason % 4.0f;
+        fruitStart += 1;
+        fruitStart = fruitStart % 4.0f;
+        var fruitEnd = (fruitStart + 1.0f) % 4.0f;
+
+        if (fruitStart > fruitEnd) {
+            return fruitStart <= currentSeason || currentSeason <= fruitEnd;
+        }
+
+        return fruitStart <= currentSeason && currentSeason <= fruitEnd;
     }
 }

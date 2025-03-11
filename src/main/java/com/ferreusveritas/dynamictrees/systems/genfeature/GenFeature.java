@@ -54,9 +54,6 @@ public abstract class GenFeature extends ConfigurableRegistryEntry<GenFeature, G
     public static final ConfigurationProperty<Integer> FRUITING_RADIUS =
             ConfigurationProperty.integer("fruiting_radius");
     public static final ConfigurationProperty<Float> PLACE_CHANCE = ConfigurationProperty.floatProperty("place_chance");
-    public static final ConfigurationProperty<Float> CLEAR_WEATHER_MODIFIER = ConfigurationProperty.floatProperty("clear_weather_modifier");
-    public static final ConfigurationProperty<Float> RAIN_MODIFIER = ConfigurationProperty.floatProperty("rain_modifier");
-    public static final ConfigurationProperty<Float> STORM_MODIFIER = ConfigurationProperty.floatProperty("storm_modifier");
     public static final ConfigurationProperty<BiomePredicate> BIOME_PREDICATE =
             ConfigurationProperty.property("biome_predicate", BiomePredicate.class);
 
